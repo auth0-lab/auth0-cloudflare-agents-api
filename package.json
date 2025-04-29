@@ -1,11 +1,11 @@
 {
   "name": "agents-oauth2-jwt-bearer",
   "version": "1.0.0",
-  "description": "",
-  "license": "ISC",
-  "author": "",
-  "type": "commonjs",
-  "main": "index.js",
+  "description": "A PartyServer mixin for adding OAuth 2.0 JWT Bearer Token authentication to your PartyServer applications.",
+  "license": "MIT",
+  "author": "José R. Romaniello (https://x.com/jfroma)",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -13,8 +13,6 @@
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
     "prepare": "npm run build",
-    "example:basic": "tsx watch --env-file=examples/.env examples/basic/index.ts",
-    "example:auth-required": "tsx watch --env-file=examples/.env examples/auth-required/index.tsx",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix"
   },
