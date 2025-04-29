@@ -1,0 +1,42 @@
+{
+  "name": "agents-oauth2-jwt-bearer",
+  "version": "1.0.0",
+  "description": "",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:ui": "vitest --ui",
+    "prepare": "npm run build",
+    "example:basic": "tsx watch --env-file=examples/.env examples/basic/index.ts",
+    "example:auth-required": "tsx watch --env-file=examples/.env examples/auth-required/index.tsx",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix"
+  },
+  "devDependencies": {
+    "@eslint/compat": "^1.2.8",
+    "@eslint/js": "^9.24.0",
+    "@types/node": "^20.11.26",
+    "@typescript-eslint/eslint-plugin": "^8.29.1",
+    "@typescript-eslint/parser": "^8.29.1",
+    "@vitest/coverage-v8": "^3.1.1",
+    "@vitest/ui": "^3.1.1",
+    "eslint": "^9.24.0",
+    "eslint-config-prettier": "^10.1.2",
+    "globals": "^16.0.0",
+    "prettier": "3.5.3",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.30.1",
+    "vitest": "^3.1.1"
+  },
+  "dependencies": {
+    "jose": "^6.0.10",
+    "openid-client": "^6.4.2",
+    "partyserver": "^0.0.68"
+  }
+}
