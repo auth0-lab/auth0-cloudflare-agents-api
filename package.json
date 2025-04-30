@@ -39,7 +39,9 @@
   },
   "dependencies": {
     "jose": "^6.0.10",
-    "openid-client": "^6.4.2",
-    "partyserver": "^0.0.68"
+    "openid-client": "^6.4.2"
+  },
+  "peerDependencies": {
+    "partyserver": "^0.0.67"
   }
 }
