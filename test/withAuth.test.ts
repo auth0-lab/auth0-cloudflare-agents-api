@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, Mock, vi } from "vitest";
 import { WithAuth } from "../src";
 import getToken from "../src/bearer";
 
@@ -13,6 +13,8 @@ vi.mock("jose", () => ({
 vi.mock("../src/bearer", () => ({
   default: vi.fn(),
 }));
+
+global.fetch = vi.fn();
 
 // Mock PartyServer components
 class MockServer {
@@ -50,6 +52,22 @@ describe("WithAuth Mixin", () => {
     vi.resetAllMocks();
 
     mockJWKSet = vi.fn();
+
+    (global.fetch as Mock).mockImplementation((uri) => {
+      if (
+        uri.toString() ===
+        "https://auth.example.com/.well-known/openid-configuration"
+      ) {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              jwks_uri: "https://auth.example.com/jwks.json",
+            }),
+        });
+      }
+    });
+
     (createRemoteJWKSet as any).mockReturnValue(mockJWKSet);
 
     // Setup default mocked behavior

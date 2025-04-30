@@ -1,13 +1,13 @@
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
+import {
+  createRemoteJWKSet,
+  decodeJwt,
+  jwtVerify,
+  JWTVerifyOptions,
+} from "jose";
 import { Connection, ConnectionContext, type Server } from "partyserver";
 import getToken from "./bearer";
 
 type ConstructorOf<T> = new (...args: any[]) => T;
-
-type WithAuthEnv = {
-  OIDC_ISSUER_URL: string;
-  OIDC_AUDIENCE: string;
-};
 
 type TokenSet = {
   access_token: string;
@@ -31,10 +31,10 @@ type TokenSet = {
  * @returns - A new class that extends the base class and adds authentication functionality.
  */
 export const WithAuth = <
-  Env extends WithAuthEnv,
-  TBase extends ConstructorOf<Server<Env> & { env: Env }>,
+  TBase extends ConstructorOf<Server & { env: unknown }>,
 >(
   Base: TBase,
+  options: JWTVerifyOptions = {},
 ) => {
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
@@ -66,20 +66,58 @@ export const WithAuth = <
       return decodeJwt(access_token);
     }
 
-    async #validateRequest(req: Request): Promise<Request | Response> {
-      try {
-        if (!this.#remoteJWKSet) {
-          this.#remoteJWKSet = createRemoteJWKSet(
-            new URL("/.well-known/jwks.json", this.env.OIDC_ISSUER_URL),
+    get #verifyOptions(): JWTVerifyOptions {
+      let result: JWTVerifyOptions = options;
+      if (typeof this.env === "object" && this.env !== null) {
+        result = {
+          issuer: this.env.hasOwnProperty("OIDC_ISSUER_URL")
+            ? ((this.env as any)["OIDC_ISSUER_URL"] as string)
+            : undefined,
+          audience: this.env.hasOwnProperty("OIDC_AUDIENCE")
+            ? ((this.env as any)["OIDC_AUDIENCE"] as string)
+            : undefined,
+          ...options,
+        };
+      }
+      if (!result.issuer) {
+        throw new Error("OIDC_ISSUER_URL is not set in env");
+      }
+      if (!result.audience) {
+        throw new Error("OIDC_AUDIENCE is not set in env");
+      }
+      return result;
+    }
+
+    async #getRemoteJWKSet(): Promise<ReturnType<typeof createRemoteJWKSet>> {
+      if (!this.#remoteJWKSet) {
+        const resp = await fetch(
+          new URL(
+            "/.well-known/openid-configuration",
+            this.#verifyOptions.issuer as string,
+          ),
+        );
+        if (!resp.ok) {
+          throw new Error(
+            `Failed to fetch OpenID configuration: ${resp.statusText}`,
           );
         }
+        const { jwks_uri } = await resp.json();
+        if (!jwks_uri) {
+          throw new Error("No JWKS URI found in OpenID configuration");
+        }
+        this.#remoteJWKSet = createRemoteJWKSet(new URL(jwks_uri));
+      }
+      return this.#remoteJWKSet;
+    }
+
+    async #validateRequest(req: Request): Promise<Request | Response> {
+      try {
         const { access_token } = this.getCredentials(req);
-
-        await jwtVerify(access_token, this.#remoteJWKSet, {
-          issuer: this.env.OIDC_ISSUER_URL,
-          audience: this.env.OIDC_AUDIENCE,
-        });
-
+        await jwtVerify(
+          access_token,
+          await this.#getRemoteJWKSet(),
+          this.#verifyOptions,
+        );
         return req;
       } catch (err) {
         return new Response("Unauthorized", { status: 401 });
