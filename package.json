@@ -6,6 +6,11 @@
   "author": "José R. Romaniello (https://x.com/jfroma)",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
