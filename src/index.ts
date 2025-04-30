@@ -31,7 +31,8 @@ type TokenSet = {
  * @returns - A new class that extends the base class and adds authentication functionality.
  */
 export const WithAuth = <
-  TBase extends ConstructorOf<Server & { env: unknown }>,
+  Env,
+  TBase extends ConstructorOf<Server<Env> & { env: Env }>,
 >(
   Base: TBase,
   options: JWTVerifyOptions = {},
