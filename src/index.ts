@@ -4,10 +4,10 @@ import {
   jwtVerify,
   JWTVerifyOptions,
 } from "jose";
-import { Connection, ConnectionContext, type Server } from "partyserver";
+import { Connection, ConnectionContext, Server } from "partyserver";
 import getToken from "./bearer";
 
-type ConstructorOf<T> = new (...args: any[]) => T;
+type Constructor<T = {}> = new (...args: any[]) => T;
 
 type TokenSet = {
   access_token: string;
@@ -30,16 +30,19 @@ type TokenSet = {
  * @param Base - The base class to extend from. This should be a class that extends `Server`.
  * @returns - A new class that extends the base class and adds authentication functionality.
  */
-export const WithAuth = <
-  Env,
-  TBase extends ConstructorOf<Server<Env> & { env: Env }>,
->(
+export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
   Base: TBase,
   options: JWTVerifyOptions = {},
 ) => {
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
     #remoteJWKSet: ReturnType<typeof createRemoteJWKSet> | undefined;
+    #env: Env;
+
+    constructor(...args: any[]) {
+      super(...args);
+      this.#env = args[args.length - 1];
+    }
 
     getCredentials(reqOrConnection: Request | Connection): TokenSet {
       if (reqOrConnection instanceof Request) {
@@ -69,13 +72,13 @@ export const WithAuth = <
 
     get #verifyOptions(): JWTVerifyOptions {
       let result: JWTVerifyOptions = options;
-      if (typeof this.env === "object" && this.env !== null) {
+      if (typeof this.#env === "object" && this.#env !== null) {
         result = {
-          issuer: this.env.hasOwnProperty("OIDC_ISSUER_URL")
-            ? ((this.env as any)["OIDC_ISSUER_URL"] as string)
+          issuer: this.#env.hasOwnProperty("OIDC_ISSUER_URL")
+            ? ((this.#env as any)["OIDC_ISSUER_URL"] as string)
             : undefined,
-          audience: this.env.hasOwnProperty("OIDC_AUDIENCE")
-            ? ((this.env as any)["OIDC_AUDIENCE"] as string)
+          audience: this.#env.hasOwnProperty("OIDC_AUDIENCE")
+            ? ((this.#env as any)["OIDC_AUDIENCE"] as string)
             : undefined,
           ...options,
         };
