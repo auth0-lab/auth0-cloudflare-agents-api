@@ -41,6 +41,11 @@ class MyAuthenticatedServer extends WithAuth(Server<MyEnv>) {
   // Your server implementation
 }
 
+// Pass verify options as parameters to the mixin function
+class MyAuthenticatedServer extends WithAuth(Server, verifyOptions) {
+  // Your server implementation
+}
+
 // Start the server
 const server = new MyAuthenticatedServer({
   env: {
