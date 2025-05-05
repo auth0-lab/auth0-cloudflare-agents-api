@@ -32,7 +32,6 @@
     "eslint": "^9.24.0",
     "eslint-config-prettier": "^10.1.2",
     "globals": "^16.0.0",
-    "partyserver": "^0.0.67",
     "prettier": "3.5.3",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.30.1",
@@ -42,5 +41,7 @@
     "jose": "^6.0.10",
     "openid-client": "^6.4.2"
   },
-  "peerDependencies": {}
+  "peerDependencies": {
+    "partyserver": "^0.0.67"
+  }
 }
