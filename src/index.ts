@@ -200,7 +200,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
 
       if (
         typeof scope !== "string" ||
-        scope.includes("openid profile") ||
+        !scope.includes("openid profile") ||
         !userinfo_endpoint
       ) {
         return;
