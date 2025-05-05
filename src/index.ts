@@ -44,9 +44,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
     #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
-
-    #userPerConnection = new WeakMap<Connection, UserInfo | undefined>();
-    #asyncUserStorage = new AsyncLocalStorage<UserInfo | undefined>();
+    #userPerToken = new Map<string, UserInfo | undefined>();
 
     #remoteJWKSet: ReturnType<typeof createRemoteJWKSet> | undefined;
     #env: Env;
@@ -176,9 +174,28 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       }
     }
 
-    async #fetchUserInfo() {
-      const { access_token } = this.getCredentials();
-      const { scope } = this.getClaims();
+    /**
+     *
+     * Get the user info from the OpenID Connect provider.
+     * This method will cache the user info for the access token.
+     *
+     * The cache might be refreshed if the `forceRefresh` parameter is set to true.
+     *
+     * @param reqOrConnection - The request or connection to get the user info for.
+     * If not provided, it will use the current async local storage.
+     * @param forceRefresh - If true, it will force a refresh of the user info.
+     * @returns - The user info from the OpenID Connect provider.
+     */
+    async getUserInfo(
+      reqOrConnection?: Request | Connection,
+      forceRefresh = false,
+    ): Promise<UserInfo | undefined> {
+      const { access_token } = this.getCredentials(reqOrConnection);
+      if (!forceRefresh && this.#userPerToken.has(access_token)) {
+        return this.#userPerToken.get(access_token);
+      }
+
+      const { scope } = this.getClaims(reqOrConnection);
       const { userinfo_endpoint } = await this.#getDiscoveryDocument();
 
       if (
@@ -200,6 +217,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
         );
       }
       const userInfo = (await userInfoResp.json()) as UserInfo;
+      this.#userPerToken.set(access_token, userInfo);
       return userInfo;
     }
 
@@ -223,10 +241,10 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       );
     }
 
-    override async onConnect(
+    override onConnect(
       connection: Connection,
       ctx: ConnectionContext,
-    ): Promise<void> {
+    ): void | Promise<void> {
       const { request: req } = ctx;
       const url = new URL(req.url);
       const token = getToken(req.headers, url.searchParams);
@@ -237,11 +255,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       };
       this.#tokenSetPerConnection.set(connection, tokenSet);
       return this.#asyncTokenStorage.run(tokenSet, async () => {
-        const userInfo = await this.#fetchUserInfo();
-        this.#userPerConnection.set(connection, userInfo);
-        return this.#asyncUserStorage.run(userInfo, () => {
-          return super.onConnect(connection, ctx);
-        });
+        return super.onConnect(connection, ctx);
       });
     }
 
