@@ -4,7 +4,8 @@ import {
   jwtVerify,
   JWTVerifyOptions,
 } from "jose";
-import { Connection, ConnectionContext, Server } from "partyserver";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { Connection, ConnectionContext, Server, WSMessage } from "partyserver";
 import getToken from "./bearer";
 
 type Constructor<T = {}> = new (...args: any[]) => T;
@@ -38,13 +39,33 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
     #remoteJWKSet: ReturnType<typeof createRemoteJWKSet> | undefined;
     #env: Env;
+    #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
 
     constructor(...args: any[]) {
       super(...args);
       this.#env = args[args.length - 1];
     }
 
-    getCredentials(reqOrConnection: Request | Connection): TokenSet {
+    /**
+     * Get the current credentials for the current request or connection.
+     *
+     * If no request or connection is provided, it will return the credentials
+     * for the current async local store.
+     *
+     * If no credentials are found, it will throw an error.
+     * @param reqOrConnection - The request or connection to get the credentials for.
+     * If not provided, it will use the current async local storage.
+     *
+     * @returns - The credentials for the current request or connection.
+     */
+    getCredentials(reqOrConnection?: Request | Connection): TokenSet {
+      if (!reqOrConnection) {
+        const tokenSet = this.#asyncTokenStorage.getStore();
+        if (!tokenSet) {
+          throw new Error("No token set found");
+        }
+        return tokenSet;
+      }
       if (reqOrConnection instanceof Request) {
         const req = reqOrConnection;
         const url = new URL(req.url);
@@ -65,7 +86,15 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return credentials;
     }
 
-    getClaims(reqOrConnection: Request | Connection): Record<string, unknown> {
+    /**
+     * Get the claims from the access token.
+     *
+     * @param reqOrConnection  - The request or connection to get the claims for.
+     * If not provided, it will use the current async local storage.
+     *
+     * @returns - The claims from the access token.
+     */
+    getClaims(reqOrConnection?: Request | Connection): Record<string, unknown> {
       const { access_token } = this.getCredentials(reqOrConnection);
       return decodeJwt(access_token);
     }
@@ -136,6 +165,18 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return this.#validateRequest(req);
     }
 
+    override onMessage(
+      connection: Connection,
+      message: WSMessage,
+    ): void | Promise<void> {
+      return this.#asyncTokenStorage.run(
+        this.getCredentials(connection),
+        () => {
+          return super.onMessage(connection, message);
+        },
+      );
+    }
+
     override onConnect(
       connection: Connection,
       ctx: ConnectionContext,
@@ -149,7 +190,9 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
         refresh_token: req.headers.get("x-refresh-token") ?? undefined,
       };
       this.#tokenSetPerConnection.set(connection, tokenSet);
-      super.onConnect(connection, ctx);
+      return this.#asyncTokenStorage.run(tokenSet, () => {
+        return super.onConnect(connection, ctx);
+      });
     }
 
     override onClose(

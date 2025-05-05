@@ -1,4 +1,5 @@
 import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
+import { Server } from "partyserver";
 import { afterEach, beforeEach, describe, expect, it, Mock, vi } from "vitest";
 import { WithAuth } from "../src";
 import getToken from "../src/bearer";
@@ -16,20 +17,21 @@ vi.mock("../src/bearer", () => ({
 
 global.fetch = vi.fn();
 
-// Mock PartyServer components
-class MockServer {
-  env: {
-    OIDC_ISSUER_URL: string;
-    OIDC_AUDIENCE: string;
-  };
-  constructor({ env = {} } = {}) {
-    // @ts-ignore
-    this.env = env;
-  }
+const onSpecialMessage = vi.fn();
 
-  onConnect() {}
-  onClose() {}
-}
+vi.mock("partyserver", () => {
+  return {
+    Server: class MockServer {
+      public onConnect() {}
+      public onClose() {}
+      public onBeforeRequest() {}
+      public onBeforeConnect() {}
+      public onMessage() {
+        onSpecialMessage();
+      }
+    },
+  };
+});
 
 // Create a mock Connection class
 class MockConnection {}
@@ -85,13 +87,10 @@ describe("WithAuth Mixin", () => {
     (getToken as any).mockReturnValue("mock-token");
 
     // Create the authenticated server class
-    // @ts-ignore
-    AuthenticatedServer = WithAuth(MockServer);
+    AuthenticatedServer = WithAuth(Server);
     server = new AuthenticatedServer({
-      env: {
-        OIDC_ISSUER_URL: "https://auth.example.com",
-        OIDC_AUDIENCE: "api",
-      },
+      OIDC_ISSUER_URL: "https://auth.example.com",
+      OIDC_AUDIENCE: "api",
     });
   });
 
@@ -145,7 +144,6 @@ describe("WithAuth Mixin", () => {
         "x-refresh-token": "refresh-token123",
       });
       const ctx = createMockContext(headers);
-
       // First connect to store credentials
       server.onConnect(connection, ctx);
 
@@ -323,6 +321,31 @@ describe("WithAuth Mixin", () => {
       expect(() => server.getCredentials(connection)).toThrow(
         "No token set found for this connection",
       );
+    });
+  });
+
+  describe("onMessage (async local storage)", () => {
+    it("should return credentials onMessage", () => {
+      // Setup
+      const connection = new MockConnection();
+      const headers = new Headers({ Authorization: "Bearer token123" });
+      const ctx = createMockContext(headers);
+      server.onConnect(connection, ctx);
+      let credentials: any;
+
+      onSpecialMessage.mockImplementation(() => {
+        // without connection
+        credentials = server.getCredentials();
+      });
+
+      // Test
+      server.onMessage(connection, "message");
+
+      // Verify
+      expect(onSpecialMessage).toHaveBeenCalled();
+      expect(credentials).toEqual({
+        access_token: "mock-token",
+      });
     });
   });
 });
