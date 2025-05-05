@@ -38,8 +38,7 @@
     "vitest": "^3.1.1"
   },
   "dependencies": {
-    "jose": "^6.0.10",
-    "openid-client": "^6.4.2"
+    "jose": "^6.0.10"
   },
   "peerDependencies": {
     "partyserver": "^0.0.67 || ^0.0.68"

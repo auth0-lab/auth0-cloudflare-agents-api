@@ -7,6 +7,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Connection, ConnectionContext, Server, WSMessage } from "partyserver";
 import getToken from "./bearer";
+import { UserInfo } from "./types";
 
 type Constructor<T = {}> = new (...args: any[]) => T;
 
@@ -17,6 +18,11 @@ type TokenSet = {
   expires_at?: number;
   scope?: string;
   token_type?: string;
+};
+
+type DiscoveryDocument = {
+  userinfo_endpoint?: string;
+  jwks_uri?: string;
 };
 
 /**
@@ -37,9 +43,14 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
 ) => {
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
+    #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
+
+    #userPerConnection = new WeakMap<Connection, UserInfo | undefined>();
+    #asyncUserStorage = new AsyncLocalStorage<UserInfo | undefined>();
+
     #remoteJWKSet: ReturnType<typeof createRemoteJWKSet> | undefined;
     #env: Env;
-    #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
+    #discoveryDocument: DiscoveryDocument | undefined;
 
     constructor(...args: any[]) {
       super(...args);
@@ -99,6 +110,25 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return decodeJwt(access_token);
     }
 
+    async #getDiscoveryDocument(): Promise<DiscoveryDocument> {
+      if (this.#discoveryDocument) {
+        return this.#discoveryDocument;
+      }
+      const resp = await fetch(
+        new URL(
+          "/.well-known/openid-configuration",
+          this.#verifyOptions.issuer as string,
+        ),
+      );
+      if (!resp.ok) {
+        throw new Error(
+          `Failed to fetch OpenID configuration: ${resp.statusText}`,
+        );
+      }
+      this.#discoveryDocument = (await resp.json()) as DiscoveryDocument;
+      return this.#discoveryDocument;
+    }
+
     get #verifyOptions(): JWTVerifyOptions {
       let result: JWTVerifyOptions = options;
       if (typeof this.#env === "object" && this.#env !== null) {
@@ -123,18 +153,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
 
     async #getRemoteJWKSet(): Promise<ReturnType<typeof createRemoteJWKSet>> {
       if (!this.#remoteJWKSet) {
-        const resp = await fetch(
-          new URL(
-            "/.well-known/openid-configuration",
-            this.#verifyOptions.issuer as string,
-          ),
-        );
-        if (!resp.ok) {
-          throw new Error(
-            `Failed to fetch OpenID configuration: ${resp.statusText}`,
-          );
-        }
-        const { jwks_uri } = await resp.json();
+        const { jwks_uri } = await this.#getDiscoveryDocument();
         if (!jwks_uri) {
           throw new Error("No JWKS URI found in OpenID configuration");
         }
@@ -157,6 +176,33 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       }
     }
 
+    async #fetchUserInfo() {
+      const { access_token } = this.getCredentials();
+      const { scope } = this.getClaims();
+      const { userinfo_endpoint } = await this.#getDiscoveryDocument();
+
+      if (
+        typeof scope !== "string" ||
+        scope.includes("openid profile") ||
+        !userinfo_endpoint
+      ) {
+        return;
+      }
+
+      const userInfoResp = await fetch(userinfo_endpoint, {
+        headers: {
+          Authorization: `Bearer ${access_token}`,
+        },
+      });
+      if (!userInfoResp.ok) {
+        throw new Error(
+          `Failed to fetch user info: ${userInfoResp.statusText}`,
+        );
+      }
+      const userInfo = (await userInfoResp.json()) as UserInfo;
+      return userInfo;
+    }
+
     async onBeforeRequest(req: Request) {
       return this.#validateRequest(req);
     }
@@ -177,10 +223,10 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       );
     }
 
-    override onConnect(
+    override async onConnect(
       connection: Connection,
       ctx: ConnectionContext,
-    ): void | Promise<void> {
+    ): Promise<void> {
       const { request: req } = ctx;
       const url = new URL(req.url);
       const token = getToken(req.headers, url.searchParams);
@@ -190,8 +236,12 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
         refresh_token: req.headers.get("x-refresh-token") ?? undefined,
       };
       this.#tokenSetPerConnection.set(connection, tokenSet);
-      return this.#asyncTokenStorage.run(tokenSet, () => {
-        return super.onConnect(connection, ctx);
+      return this.#asyncTokenStorage.run(tokenSet, async () => {
+        const userInfo = await this.#fetchUserInfo();
+        this.#userPerConnection.set(connection, userInfo);
+        return this.#asyncUserStorage.run(userInfo, () => {
+          return super.onConnect(connection, ctx);
+        });
       });
     }
 
