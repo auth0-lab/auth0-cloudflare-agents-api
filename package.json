@@ -4,6 +4,7 @@
   "description": "A PartyServer mixin for adding OAuth 2.0 JWT Bearer Token authentication to your PartyServer applications.",
   "license": "MIT",
   "author": "José R. Romaniello (https://x.com/jfroma)",
+  "type": "module",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

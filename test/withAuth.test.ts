@@ -26,6 +26,9 @@ vi.mock("partyserver", () => {
       public onClose() {}
       public onBeforeRequest() {}
       public onBeforeConnect() {}
+      public onRequest() {
+        return new Response("OK");
+      }
       public onMessage() {
         onSpecialMessage();
       }
@@ -34,7 +37,10 @@ vi.mock("partyserver", () => {
 });
 
 // Create a mock Connection class
-class MockConnection {}
+class MockConnection {
+  close = vi.fn();
+  send = vi.fn();
+}
 
 // Create a mock ConnectionContext
 const createMockContext = (
@@ -49,7 +55,8 @@ describe("WithAuth Mixin", () => {
   let AuthenticatedServer: any;
   let server: any;
   let mockJWKSet: any;
-
+  const onAuthenticatedRequest = vi.fn();
+  const onAuthenticatedConnect = vi.fn();
   beforeEach(() => {
     vi.resetAllMocks();
 
@@ -92,6 +99,8 @@ describe("WithAuth Mixin", () => {
       OIDC_ISSUER_URL: "https://auth.example.com",
       OIDC_AUDIENCE: "api",
     });
+    server.onAuthenticatedRequest = onAuthenticatedRequest;
+    server.onAuthenticatedConnect = onAuthenticatedConnect;
   });
 
   afterEach(() => {
@@ -99,7 +108,7 @@ describe("WithAuth Mixin", () => {
   });
 
   describe("getCredentials", () => {
-    it("should get credentials from a request", () => {
+    it("should get credentials from a request", async () => {
       // Setup
       const headers = new Headers({
         Authorization: "Bearer token123",
@@ -110,7 +119,12 @@ describe("WithAuth Mixin", () => {
       (getToken as any).mockReturnValue("token123");
 
       // Test
-      const credentials = server.getCredentials(req);
+      let credentials: any = null;
+      server.onAuthenticatedRequest.mockImplementation(() => {
+        credentials = server.getCredentials();
+        return new Response("OK");
+      });
+      await server.onRequest(req);
 
       // Verify
       expect(getToken).toHaveBeenCalledWith(
@@ -124,18 +138,12 @@ describe("WithAuth Mixin", () => {
       });
     });
 
-    it("should throw an error if no token found for request", () => {
-      // Setup
-      const req = new Request("https://example.com");
-      (getToken as any).mockReturnValue(null);
-
+    it("should return undef if no token found in the context", () => {
       // Test & Verify
-      expect(() => server.getCredentials(req)).toThrow(
-        "No token set found for this request",
-      );
+      expect(server.getCredentials()).toBeUndefined();
     });
 
-    it("should get credentials from a connection", () => {
+    it("should get credentials from a connection", async () => {
       // Setup
       const connection = new MockConnection();
       const headers = new Headers({
@@ -144,11 +152,13 @@ describe("WithAuth Mixin", () => {
         "x-refresh-token": "refresh-token123",
       });
       const ctx = createMockContext(headers);
-      // First connect to store credentials
-      server.onConnect(connection, ctx);
 
-      // Test
-      const credentials = server.getCredentials(connection);
+      //test
+      let credentials: any = null;
+      server.onAuthenticatedConnect.mockImplementation(() => {
+        credentials = server.getCredentials();
+      });
+      await server.onConnect(connection, ctx);
 
       // Verify
       expect(credentials).toEqual({
@@ -157,20 +167,10 @@ describe("WithAuth Mixin", () => {
         refresh_token: "refresh-token123",
       });
     });
-
-    it("should throw an error if no token found for connection", () => {
-      // Setup
-      const connection = new MockConnection();
-
-      // Test & Verify
-      expect(() => server.getCredentials(connection)).toThrow(
-        "No token set found for this connection",
-      );
-    });
   });
 
   describe("getClaims", () => {
-    it("should decode and return claims from request token", () => {
+    it("should decode and return claims from request token", async () => {
       // Setup
       const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("token123");
@@ -178,14 +178,19 @@ describe("WithAuth Mixin", () => {
       (decodeJwt as any).mockReturnValue(mockClaims);
 
       // Test
-      const claims = server.getClaims(req);
+      let claims: any = null;
+      server.onAuthenticatedRequest.mockImplementation(() => {
+        claims = server.getClaims(req);
+        return new Response("OK");
+      });
+      await server.onRequest(req);
 
       // Verify
       expect(decodeJwt).toHaveBeenCalledWith("token123");
       expect(claims).toEqual(mockClaims);
     });
 
-    it("should decode and return claims from connection token", () => {
+    it("should decode and return claims from connection token", async () => {
       // Setup
       const connection = new MockConnection();
       const headers = new Headers({ Authorization: "Bearer token123" });
@@ -196,7 +201,11 @@ describe("WithAuth Mixin", () => {
       (decodeJwt as any).mockReturnValue(mockClaims);
 
       // Test
-      const claims = server.getClaims(connection);
+      let claims: any = null;
+      server.onAuthenticatedConnect.mockImplementation(() => {
+        claims = server.getClaims(connection);
+      });
+      await server.onConnect(connection, ctx);
 
       // Verify
       expect(decodeJwt).toHaveBeenCalledWith("mock-token");
@@ -204,14 +213,14 @@ describe("WithAuth Mixin", () => {
     });
   });
 
-  describe("onBeforeRequest", () => {
+  describe("onRequest", () => {
     it("should validate and allow valid requests", async () => {
       // Setup
       const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("valid-token");
 
       // Test
-      const result = await server.onBeforeRequest(req);
+      const resp = await server.onRequest(req);
 
       expect(jwtVerify).toHaveBeenCalled();
       // Verify
@@ -223,7 +232,7 @@ describe("WithAuth Mixin", () => {
           audience: "api",
         },
       );
-      expect(result).toBe(req); // Should return the original request
+      expect(resp.status).toBe(200);
     });
 
     it("should return a 401 response for invalid tokens", async () => {
@@ -233,7 +242,7 @@ describe("WithAuth Mixin", () => {
       (jwtVerify as any).mockRejectedValue(new Error("Invalid token"));
 
       // Test
-      const result = await server.onBeforeRequest(req);
+      const result = await server.onRequest(req);
 
       // Verify
       expect(result).toBeInstanceOf(Response);
@@ -242,14 +251,15 @@ describe("WithAuth Mixin", () => {
     });
   });
 
-  describe("onBeforeConnect", () => {
+  describe("onConnect", () => {
     it("should validate and allow valid connection requests", async () => {
       // Setup
-      const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("valid-token");
+      const connection = new MockConnection();
+      const ctx = createMockContext();
 
       // Test
-      const result = await server.onBeforeConnect(req);
+      await server.onConnect(connection, ctx);
 
       // Verify
       expect(jwtVerify).toHaveBeenCalledWith(
@@ -260,27 +270,27 @@ describe("WithAuth Mixin", () => {
           audience: "api",
         },
       );
-      expect(result).toBe(req); // Should return the original request
+
+      expect(connection.close).not.toHaveBeenCalled();
     });
 
-    it("should return a 401 response for invalid tokens on connection", async () => {
+    it("should properly close the connection when the token is invalid", async () => {
       // Setup
-      const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("invalid-token");
       (jwtVerify as any).mockRejectedValue(new Error("Invalid token"));
+      const connection = new MockConnection();
+      const ctx = createMockContext();
 
       // Test
-      const result = await server.onBeforeConnect(req);
+      await server.onConnect(connection, ctx);
 
       // Verify
-      expect(result).toBeInstanceOf(Response);
-      expect(result.status).toBe(401);
-      expect(await result.text()).toBe("Unauthorized");
+      expect(connection.close).toHaveBeenCalledWith(1008, "Unauthorized");
     });
   });
 
   describe("connection lifecycle", () => {
-    it("should store token set when connection is established", () => {
+    it("should store token set when connection is established", async () => {
       // Setup
       const connection = new MockConnection();
       const headers = new Headers({
@@ -291,10 +301,13 @@ describe("WithAuth Mixin", () => {
       const ctx = createMockContext(headers);
 
       // Test
-      server.onConnect(connection, ctx);
+      let credentials: any = null;
+      server.onAuthenticatedConnect.mockImplementation(() => {
+        credentials = server.getCredentials(connection);
+      });
+      await server.onConnect(connection, ctx);
 
       // Verify - test by retrieving credentials
-      const credentials = server.getCredentials(connection);
       expect(credentials).toEqual({
         access_token: "mock-token",
         id_token: "id-token-xyz",
@@ -302,35 +315,32 @@ describe("WithAuth Mixin", () => {
       });
     });
 
-    it("should delete token set when connection is closed", () => {
+    it("should delete token set when connection is closed", async () => {
       // Setup
       const connection = new MockConnection();
       const headers = new Headers({ Authorization: "Bearer token123" });
       const ctx = createMockContext(headers);
 
       // First connect to store credentials
-      server.onConnect(connection, ctx);
+      await server.onConnect(connection, ctx);
 
       // Test - can get credentials before close
-      expect(() => server.getCredentials(connection)).not.toThrow();
+      expect(server.getCredentialsFromConnection(connection)).not.toBeNull();
 
       // Close the connection
       server.onClose(connection, 1000, "Normal closure", true);
 
       // Verify - should throw after close
-      expect(() => server.getCredentials(connection)).toThrow(
-        "No token set found for this connection",
-      );
+      expect(server.getCredentialsFromConnection(connection)).toBeUndefined();
     });
   });
 
   describe("onMessage (async local storage)", () => {
-    it("should return credentials onMessage", () => {
+    it("should return credentials onMessage", async () => {
       // Setup
       const connection = new MockConnection();
       const headers = new Headers({ Authorization: "Bearer token123" });
       const ctx = createMockContext(headers);
-      server.onConnect(connection, ctx);
       let credentials: any;
 
       onSpecialMessage.mockImplementation(() => {
@@ -338,8 +348,10 @@ describe("WithAuth Mixin", () => {
         credentials = server.getCredentials();
       });
 
+      await server.onConnect(connection, ctx);
+
       // Test
-      server.onMessage(connection, "message");
+      await server.onMessage(connection, "message");
 
       // Verify
       expect(onSpecialMessage).toHaveBeenCalled();

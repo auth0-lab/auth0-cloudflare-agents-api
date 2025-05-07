@@ -4,7 +4,7 @@
 /**
  * Get a Bearer Token from a request per https://tools.ietf.org/html/rfc6750#section-2
  */
-import { InvalidRequestError, UnauthorizedError } from "./errors";
+import { InvalidRequestError, UnauthorizedError } from "./errors.js";
 
 const TOKEN_RE = /^Bearer (.+)$/i;
 

@@ -42,7 +42,12 @@ class MyAuthenticatedServer extends WithAuth(Server<MyEnv>) {
 }
 
 // Pass verify options as parameters to the mixin function
-class MyAuthenticatedServer extends WithAuth(Server, verifyOptions) {
+class MyAuthenticatedServer extends WithAuth(Server, {
+  // Optional: specify the audience and issuer, etc
+  verify: verifyOptions,
+  // Optional: allow unauthenticated requests and connections
+  authRequired: false,
+}) {
   // Your server implementation
 }
 
@@ -64,12 +69,21 @@ Once you've added the mixin, you can access token information and claims:
 
 ```typescript
 class MyAuthenticatedServer extends WithAuth(Server<MyEnv>) {
+  //optionally override onAuthenticatedRequest
+  onAuthenticatedRequest(req: Request) {
+    // Get the JWT claims from the token
+    const claims = this.getClaims();
+    if (claims.sub !== expectedUserId) {
+      return new Response("You are not welcome", { status: 401 });
+    }
+  }
+
   onRequest(req: Request) {
     // Get the token set from the request
-    const tokenSet = this.getCredentials(req);
+    const tokenSet = this.getCredentials();
 
-    // Get the JWT claims from the token
-    const claims = this.getClaims(req);
+    // Get the Access Token claims from the token
+    const claims = this.getClaims();
 
     // Now you can use the claims to identify the user
     console.log(`User ID: ${claims.sub}`);
@@ -78,12 +92,32 @@ class MyAuthenticatedServer extends WithAuth(Server<MyEnv>) {
     return new Response("Hello authenticated user!");
   }
 
-  onMessage(connection: Connection, message: unknown) {
+  //optionally override onAuthenticatedConnect
+  onAuthenticatedConnect(connection: Connection, ctx: ConnectionContext) {
+    // Get the JWT claims from the token
+    const claims = this.getClaims();
+    if (claims.sub !== expectedUserId) {
+      connection.close(1008, "I don't like you");
+    }
+  }
+
+  onConnect(connection: Connection, ctx: ConnectionContext) {
     // Get the token set from the connection
-    const tokenSet = this.getCredentials(connection);
+    const tokenSet = this.getCredentials();
 
     // Get the JWT claims from the token
-    const claims = this.getClaims(connection);
+    const claims = this.getClaims();
+
+    // Use the claims in your connection handling logic
+    console.log(`Connected user: ${claims.sub}`);
+  }
+
+  onMessage(connection: Connection, message: unknown) {
+    // Get the token set from the connection
+    const tokenSet = this.getCredentials();
+
+    // Get the JWT claims from the token
+    const claims = this.getClaims();
 
     // Use the claims in your message handling logic
     console.log(`Message from user: ${claims.sub}`);
@@ -133,9 +167,9 @@ A mixin factory function that adds authentication functionality to a PartyServer
 
 ### Methods
 
-#### `getCredentials(reqOrConnection: Request | Connection): TokenSet`
+#### `getCredentials(): TokenSet | void`
 
-Gets the token set associated with a request or connection.
+Gets the token set associated with the current context.
 
 **Returns:**
 

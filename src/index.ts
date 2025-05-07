@@ -6,8 +6,8 @@ import {
 } from "jose";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Connection, ConnectionContext, Server, WSMessage } from "partyserver";
-import getToken from "./bearer";
-import { UserInfo } from "./types";
+import getToken from "./bearer/index.js";
+import { UserInfo } from "./types.js";
 
 type Constructor<T = {}> = new (...args: any[]) => T;
 
@@ -39,8 +39,12 @@ type DiscoveryDocument = {
  */
 export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
   Base: TBase,
-  options: JWTVerifyOptions = {},
+  options: {
+    verify?: JWTVerifyOptions;
+    authRequired?: boolean;
+  } = { verify: {}, authRequired: true },
 ) => {
+  const authRequired = options.authRequired ?? true;
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
     #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
@@ -57,42 +61,21 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
 
     /**
      * Get the current credentials for the current request or connection.
-     *
-     * If no request or connection is provided, it will return the credentials
-     * for the current async local store.
-     *
-     * If no credentials are found, it will throw an error.
-     * @param reqOrConnection - The request or connection to get the credentials for.
-     * If not provided, it will use the current async local storage.
-     *
      * @returns - The credentials for the current request or connection.
      */
-    getCredentials(reqOrConnection?: Request | Connection): TokenSet {
-      if (!reqOrConnection) {
-        const tokenSet = this.#asyncTokenStorage.getStore();
-        if (!tokenSet) {
-          throw new Error("No token set found");
-        }
-        return tokenSet;
-      }
-      if (reqOrConnection instanceof Request) {
-        const req = reqOrConnection;
-        const url = new URL(req.url);
-        const token = getToken(req.headers, url.searchParams);
-        if (!token) {
-          throw new Error("No token set found for this request");
-        }
-        return {
-          access_token: token,
-          id_token: req.headers.get("x-id-token") ?? undefined,
-          refresh_token: req.headers.get("x-refresh-token") ?? undefined,
-        };
-      }
-      const credentials = this.#tokenSetPerConnection.get(reqOrConnection);
-      if (!credentials) {
-        throw new Error("No token set found for this connection");
-      }
-      return credentials;
+    getCredentials(): TokenSet | undefined {
+      return this.#asyncTokenStorage.getStore();
+    }
+
+    /**
+     * Get the credentials for a specific connection.
+     * This method can be used outside of the request/connection context.
+     * You shouldn't need to use this method in most cases, instead use getCredentials().
+     * @param connection - The connection to get the credentials for.
+     * @returns - The credentials for the connection.
+     */
+    getCredentialsFromConnection(connection: Connection): TokenSet | undefined {
+      return this.#tokenSetPerConnection.get(connection);
     }
 
     /**
@@ -103,9 +86,23 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
      *
      * @returns - The claims from the access token.
      */
-    getClaims(reqOrConnection?: Request | Connection): Record<string, unknown> {
-      const { access_token } = this.getCredentials(reqOrConnection);
-      return decodeJwt(access_token);
+    getClaims(): Record<string, unknown> | undefined {
+      const credentials = this.getCredentials();
+      return credentials && decodeJwt(credentials.access_token);
+    }
+
+    #getTokenSetFromRequest(req: Request): TokenSet | undefined {
+      const url = new URL(req.url);
+      const token = getToken(req.headers, url.searchParams);
+      if (!token) {
+        return;
+      }
+      const tokenSet = {
+        access_token: token,
+        id_token: req.headers.get("x-id-token") ?? undefined,
+        refresh_token: req.headers.get("x-refresh-token") ?? undefined,
+      };
+      return tokenSet;
     }
 
     async #getDiscoveryDocument(): Promise<DiscoveryDocument> {
@@ -128,7 +125,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
     }
 
     get #verifyOptions(): JWTVerifyOptions {
-      let result: JWTVerifyOptions = options;
+      let result: JWTVerifyOptions = options.verify ?? {};
       if (typeof this.#env === "object" && this.#env !== null) {
         result = {
           issuer: this.#env.hasOwnProperty("OIDC_ISSUER_URL")
@@ -137,7 +134,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
           audience: this.#env.hasOwnProperty("OIDC_AUDIENCE")
             ? ((this.#env as any)["OIDC_AUDIENCE"] as string)
             : undefined,
-          ...options,
+          ...options.verify,
         };
       }
       if (!result.issuer) {
@@ -160,17 +157,21 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return this.#remoteJWKSet;
     }
 
-    async #validateRequest(req: Request): Promise<Request | Response> {
+    async #validateTokenFromRequest(req: Request): Promise<boolean> {
       try {
-        const { access_token } = this.getCredentials(req);
+        // const { access_token } = this.getCredentials(req);
+        const tokenSet = this.#getTokenSetFromRequest(req);
+        if (!tokenSet) {
+          return false;
+        }
         await jwtVerify(
-          access_token,
+          tokenSet.access_token,
           await this.#getRemoteJWKSet(),
           this.#verifyOptions,
         );
-        return req;
+        return true;
       } catch (err) {
-        return new Response("Unauthorized", { status: 401 });
+        return false;
       }
     }
 
@@ -186,24 +187,20 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
      * @param forceRefresh - If true, it will force a refresh of the user info.
      * @returns - The user info from the OpenID Connect provider.
      */
-    async getUserInfo(
-      reqOrConnection?: Request | Connection,
-      forceRefresh = false,
-    ): Promise<UserInfo | undefined> {
-      const { access_token } = this.getCredentials(reqOrConnection);
+    async getUserInfo(forceRefresh = false): Promise<UserInfo | undefined> {
+      const credentials = this.getCredentials();
+      if (!credentials) {
+        throw new Error("No credentials found");
+      }
+
+      const { access_token } = credentials;
       if (!forceRefresh && this.#userPerToken.has(access_token)) {
         return this.#userPerToken.get(access_token);
       }
 
-      const { scope } = this.getClaims(reqOrConnection);
       const { userinfo_endpoint } = await this.#getDiscoveryDocument();
-
-      if (
-        typeof scope !== "string" ||
-        !scope.includes("openid profile") ||
-        !userinfo_endpoint
-      ) {
-        return;
+      if (!userinfo_endpoint) {
+        throw new Error("No userinfo endpoint found in OpenID configuration");
       }
 
       const userInfoResp = await fetch(userinfo_endpoint, {
@@ -221,43 +218,86 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return userInfo;
     }
 
-    async onBeforeRequest(req: Request) {
-      return this.#validateRequest(req);
+    async onRequest(req: Request) {
+      const isValid = await this.#validateTokenFromRequest(req);
+      if (authRequired && !isValid) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      if (isValid) {
+        const tokenSet = this.#getTokenSetFromRequest(req);
+        return this.#asyncTokenStorage.run(tokenSet!, async () => {
+          const authResponse = await this.onAuthenticatedRequest(req);
+          return authResponse ?? super.onRequest(req);
+        });
+      }
+      return super.onRequest(req);
     }
 
-    async onBeforeConnect(req: Request) {
-      return this.#validateRequest(req);
+    override async onConnect(connection: Connection, ctx: ConnectionContext) {
+      const isValid = await this.#validateTokenFromRequest(ctx.request);
+      if (!isValid) {
+        if (authRequired) {
+          connection.close(1008, "Unauthorized");
+          return;
+        }
+        return super.onConnect(connection, ctx);
+      }
+      const tokenSet = this.#getTokenSetFromRequest(ctx.request)!;
+      // We need to store the tokenset-connection mapping so we can later
+      // have access to the token set in the onMessage method.
+      this.#tokenSetPerConnection.set(connection, tokenSet);
+      return this.#asyncTokenStorage.run(tokenSet, async () => {
+        await this.onAuthenticatedConnect(connection, ctx);
+        if (connection.readyState === connection.OPEN) {
+          await super.onConnect(connection, ctx);
+        }
+      });
     }
 
     override onMessage(
       connection: Connection,
       message: WSMessage,
     ): void | Promise<void> {
-      return this.#asyncTokenStorage.run(
-        this.getCredentials(connection),
-        () => {
-          return super.onMessage(connection, message);
-        },
-      );
-    }
+      const credentials = this.#tokenSetPerConnection.get(connection);
 
-    override onConnect(
-      connection: Connection,
-      ctx: ConnectionContext,
-    ): void | Promise<void> {
-      const { request: req } = ctx;
-      const url = new URL(req.url);
-      const token = getToken(req.headers, url.searchParams);
-      const tokenSet = {
-        access_token: token,
-        id_token: req.headers.get("x-id-token") ?? undefined,
-        refresh_token: req.headers.get("x-refresh-token") ?? undefined,
-      };
-      this.#tokenSetPerConnection.set(connection, tokenSet);
-      return this.#asyncTokenStorage.run(tokenSet, async () => {
-        return super.onConnect(connection, ctx);
+      if (!credentials) {
+        if (authRequired) {
+          connection.close(1008, "Unauthorized");
+          return;
+        }
+        return super.onMessage(connection, message);
+      }
+
+      return this.#asyncTokenStorage.run(credentials, () => {
+        return super.onMessage(connection, message);
       });
     }
+
+    /**
+     * Override this method to handle authenticated connections.
+     *
+     * If the connection is closed in this method, the super `onConnect` method
+     * will not be called.
+     *
+     * @param connection  - The connection that was authenticated.
+     * @param ctx - The connection context.
+     */
+    async onAuthenticatedConnect(
+      connection: Connection,
+      ctx: ConnectionContext,
+    ): Promise<void> {}
+
+    /**
+     *
+     * Override this method to handle authenticated requests.
+     *
+     * If the request returns a response, the super `onRequest` method
+     * will not be called.
+     *
+     * @param req  - The request that was authenticated.
+     * @returns - Either undefined or a response.
+     */
+    async onAuthenticatedRequest(req: Request): Promise<void | Response> {}
 
     override onClose(
       connection: Connection,
@@ -265,6 +305,10 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       reason: string,
       wasClean: boolean,
     ): void | Promise<void> {
+      const tokenSet = this.#tokenSetPerConnection.get(connection);
+      if (tokenSet) {
+        this.#userPerToken.delete(tokenSet.access_token);
+      }
       this.#tokenSetPerConnection.delete(connection);
       super.onClose(connection, code, reason, wasClean);
     }
