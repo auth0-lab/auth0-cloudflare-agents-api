@@ -6,6 +6,7 @@ import {
 } from "jose";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Connection, ConnectionContext, Server, WSMessage } from "partyserver";
+import { UnauthorizedError } from "./bearer/errors.js";
 import getToken from "./bearer/index.js";
 import { UserInfo } from "./types.js";
 
@@ -25,6 +26,29 @@ type DiscoveryDocument = {
   jwks_uri?: string;
 };
 
+type WithAuthParams = {
+  /**
+   * The options to pass to the JWT verification.
+   */
+  verify?: JWTVerifyOptions;
+
+  /**
+   * Whether to require authentication for all requests.
+   * If set to false, unauthenticated requests will be allowed.
+   *
+   * Defaults to true.
+   */
+  authRequired?: boolean;
+
+  /**
+   * An optional logger function to log debug messages.
+   *
+   * @param message - The message to log.
+   * @param content - An optional object containing additional content to log.
+   */
+  debug?: (message: string, content?: Record<string, unknown>) => void;
+};
+
 /**
  *
  * Mixin to add authentication functionality to a PartyServer server using
@@ -39,12 +63,11 @@ type DiscoveryDocument = {
  */
 export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
   Base: TBase,
-  options: {
-    verify?: JWTVerifyOptions;
-    authRequired?: boolean;
-  } = { verify: {}, authRequired: true },
+  options: WithAuthParams = { verify: {}, authRequired: true },
 ) => {
   const authRequired = options.authRequired ?? true;
+  const debug = options.debug ?? (() => {});
+
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
     #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
@@ -91,12 +114,9 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return credentials && decodeJwt(credentials.access_token);
     }
 
-    #getTokenSetFromRequest(req: Request): TokenSet | undefined {
+    #getTokenSetFromRequest(req: Request): TokenSet {
       const url = new URL(req.url);
       const token = getToken(req.headers, url.searchParams);
-      if (!token) {
-        return;
-      }
       const tokenSet = {
         access_token: token,
         id_token: req.headers.get("x-id-token") ?? undefined,
@@ -157,22 +177,14 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       return this.#remoteJWKSet;
     }
 
-    async #validateTokenFromRequest(req: Request): Promise<boolean> {
-      try {
-        // const { access_token } = this.getCredentials(req);
-        const tokenSet = this.#getTokenSetFromRequest(req);
-        if (!tokenSet) {
-          return false;
-        }
-        await jwtVerify(
-          tokenSet.access_token,
-          await this.#getRemoteJWKSet(),
-          this.#verifyOptions,
-        );
-        return true;
-      } catch (err) {
-        return false;
-      }
+    async #validateTokenFromRequest(req: Request): Promise<TokenSet> {
+      const tokenSet = this.#getTokenSetFromRequest(req);
+      await jwtVerify(
+        tokenSet.access_token,
+        await this.#getRemoteJWKSet(),
+        this.#verifyOptions,
+      );
+      return tokenSet;
     }
 
     /**
@@ -219,39 +231,56 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
     }
 
     async onRequest(req: Request) {
-      const isValid = await this.#validateTokenFromRequest(req);
-      if (authRequired && !isValid) {
-        return new Response("Unauthorized", { status: 401 });
-      }
-      if (isValid) {
-        const tokenSet = this.#getTokenSetFromRequest(req);
+      try {
+        const tokenSet = await this.#validateTokenFromRequest(req);
         return this.#asyncTokenStorage.run(tokenSet!, async () => {
           const authResponse = await this.onAuthenticatedRequest(req);
           return authResponse ?? super.onRequest(req);
         });
+      } catch (err) {
+        debug(err instanceof Error ? err.message : "Unknown error", {
+          error: err,
+          authRequired,
+        });
+
+        if (!authRequired) {
+          return super.onRequest(req);
+        }
+        if (err instanceof UnauthorizedError) {
+          return new Response(err.message, { status: err.statusCode });
+        }
+        return new Response("Unauthorized", {
+          status: 401,
+          statusText: "Unauthorized",
+        });
       }
-      return super.onRequest(req);
     }
 
     override async onConnect(connection: Connection, ctx: ConnectionContext) {
-      const isValid = await this.#validateTokenFromRequest(ctx.request);
-      if (!isValid) {
-        if (authRequired) {
-          connection.close(1008, "Unauthorized");
+      try {
+        const tokenSet = await this.#validateTokenFromRequest(ctx.request);
+        this.#tokenSetPerConnection.set(connection, tokenSet);
+        return this.#asyncTokenStorage.run(tokenSet, async () => {
+          await this.onAuthenticatedConnect(connection, ctx);
+          if (connection.readyState === connection.OPEN) {
+            await super.onConnect(connection, ctx);
+          }
+        });
+      } catch (err) {
+        debug(err instanceof Error ? err.message : "Unknown error", {
+          error: err,
+          authRequired,
+        });
+
+        if (!authRequired) {
+          return super.onConnect(connection, ctx);
+        }
+        if (err instanceof UnauthorizedError) {
+          connection.close(1008, err.message);
           return;
         }
-        return super.onConnect(connection, ctx);
+        connection.close(1008, "Unauthorized");
       }
-      const tokenSet = this.#getTokenSetFromRequest(ctx.request)!;
-      // We need to store the tokenset-connection mapping so we can later
-      // have access to the token set in the onMessage method.
-      this.#tokenSetPerConnection.set(connection, tokenSet);
-      return this.#asyncTokenStorage.run(tokenSet, async () => {
-        await this.onAuthenticatedConnect(connection, ctx);
-        if (connection.readyState === connection.OPEN) {
-          await super.onConnect(connection, ctx);
-        }
-      });
     }
 
     override onMessage(
