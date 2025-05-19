@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
 import { Server } from "partyserver";
 import { afterEach, beforeEach, describe, expect, it, Mock, vi } from "vitest";

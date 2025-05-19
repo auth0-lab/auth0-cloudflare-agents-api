@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 export interface UserInfo {
   readonly sub: string;
   readonly name?: string;

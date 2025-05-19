@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import {
   createRemoteJWKSet,
   decodeJwt,
@@ -10,7 +11,7 @@ import { UnauthorizedError } from "./bearer/errors.js";
 import getToken from "./bearer/index.js";
 import { UserInfo } from "./types.js";
 
-type Constructor<T = {}> = new (...args: any[]) => T;
+type Constructor<T = object> = new (...args: any[]) => T;
 
 type TokenSet = {
   access_token: string;
@@ -68,18 +69,19 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
   const authRequired = options.authRequired ?? true;
   const debug = options.debug ?? (() => {});
 
+  //This kind of work like an an static member for the mixin class.
+  const asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
+
   return class extends Base {
     #tokenSetPerConnection = new WeakMap<Connection, TokenSet>();
-    #asyncTokenStorage = new AsyncLocalStorage<TokenSet>();
     #userPerToken = new Map<string, UserInfo | undefined>();
-
     #remoteJWKSet: ReturnType<typeof createRemoteJWKSet> | undefined;
     #env: Env;
     #discoveryDocument: DiscoveryDocument | undefined;
 
     constructor(...args: any[]) {
       super(...args);
-      this.#env = args[args.length - 1];
+      this.#env = args[args.length - 1] as Env;
     }
 
     /**
@@ -87,7 +89,15 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
      * @returns - The credentials for the current request or connection.
      */
     getCredentials(): TokenSet | undefined {
-      return this.#asyncTokenStorage.getStore();
+      return asyncTokenStorage.getStore();
+    }
+
+    /**
+     * Get the current credentials for the current request or connection.
+     * @returns - The credentials for the current request or connection.
+     */
+    static getCredentials(): TokenSet | undefined {
+      return asyncTokenStorage.getStore();
     }
 
     /**
@@ -148,10 +158,16 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       let result: JWTVerifyOptions = options.verify ?? {};
       if (typeof this.#env === "object" && this.#env !== null) {
         result = {
-          issuer: this.#env.hasOwnProperty("OIDC_ISSUER_URL")
+          issuer: Object.prototype.hasOwnProperty.call(
+            this.#env,
+            "OIDC_ISSUER_URL",
+          )
             ? ((this.#env as any)["OIDC_ISSUER_URL"] as string)
             : undefined,
-          audience: this.#env.hasOwnProperty("OIDC_AUDIENCE")
+          audience: Object.prototype.hasOwnProperty.call(
+            this.#env,
+            "OIDC_AUDIENCE",
+          )
             ? ((this.#env as any)["OIDC_AUDIENCE"] as string)
             : undefined,
           ...options.verify,
@@ -233,7 +249,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
     async onRequest(req: Request) {
       try {
         const tokenSet = await this.#validateTokenFromRequest(req);
-        return this.#asyncTokenStorage.run(tokenSet!, async () => {
+        return asyncTokenStorage.run(tokenSet!, async () => {
           const authResponse = await this.onAuthenticatedRequest(req);
           return authResponse ?? super.onRequest(req);
         });
@@ -260,7 +276,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
       try {
         const tokenSet = await this.#validateTokenFromRequest(ctx.request);
         this.#tokenSetPerConnection.set(connection, tokenSet);
-        return this.#asyncTokenStorage.run(tokenSet, async () => {
+        return asyncTokenStorage.run(tokenSet, async () => {
           await this.onAuthenticatedConnect(connection, ctx);
           if (connection.readyState === connection.OPEN) {
             await super.onConnect(connection, ctx);
@@ -297,7 +313,7 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
         return super.onMessage(connection, message);
       }
 
-      return this.#asyncTokenStorage.run(credentials, () => {
+      return asyncTokenStorage.run(credentials, () => {
         return super.onMessage(connection, message);
       });
     }
@@ -314,7 +330,12 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
     async onAuthenticatedConnect(
       connection: Connection,
       ctx: ConnectionContext,
-    ): Promise<void> {}
+    ): Promise<void> {
+      debug("Authenticated connection", {
+        connection,
+        ctx,
+      });
+    }
 
     /**
      *
@@ -326,7 +347,11 @@ export const WithAuth = <Env, TBase extends Constructor<Server<Env>>>(
      * @param req  - The request that was authenticated.
      * @returns - Either undefined or a response.
      */
-    async onAuthenticatedRequest(req: Request): Promise<void | Response> {}
+    async onAuthenticatedRequest(req: Request): Promise<void | Response> {
+      debug("Authenticated request", {
+        req,
+      });
+    }
 
     override onClose(
       connection: Connection,
