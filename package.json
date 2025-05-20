@@ -1,9 +1,13 @@
 {
-  "name": "agents-oauth2-jwt-bearer",
+  "name": "@auth0/agents-oauth2-jwt-bearer",
   "version": "2.2.0",
+  "private": true,
   "description": "A PartyServer mixin for adding OAuth 2.0 JWT Bearer Token authentication to your PartyServer applications.",
-  "license": "MIT",
-  "author": "José R. Romaniello (https://x.com/jfroma)",
+  "author": {
+    "name": "Auth0 Inc.",
+    "url": "https://auth0.com"
+  },
+  "license": "Apache-2.0",
   "type": "module",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
