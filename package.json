@@ -1,8 +1,7 @@
 {
-  "name": "@auth0/agents-oauth2-jwt-bearer",
-  "version": "2.2.0",
-  "private": true,
-  "description": "A PartyServer mixin for adding OAuth 2.0 JWT Bearer Token authentication to your PartyServer applications.",
+  "name": "@auth0/auth0-cloudflare-agent-api",
+  "version": "3.3.1",
+  "description": "A PartyServer mixin for adding Auth0 API authentication to your PartyServer applications.",
   "author": {
     "name": "Auth0 Inc.",
     "url": "https://auth0.com"
@@ -42,10 +41,10 @@
     "typescript-eslint": "^8.30.1",
     "vitest": "^3.1.1"
   },
-  "dependencies": {
-    "jose": "^6.0.10"
-  },
   "peerDependencies": {
-    "partyserver": "^0.0.67 || ^0.0.68"
+    "partyserver": ">=0.0.67 <0.0.72"
+  },
+  "dependencies": {
+    "@auth0/auth0-api-js": "^1.0.1"
   }
 }

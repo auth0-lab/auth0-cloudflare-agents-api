@@ -1,15 +1,22 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { createRemoteJWKSet, decodeJwt, jwtVerify } from "jose";
 import { Server } from "partyserver";
-import { afterEach, beforeEach, describe, expect, it, Mock, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WithAuth } from "../src";
 import getToken from "../src/bearer";
+import {
+  InsufficientScopeError,
+  UnauthorizedError,
+} from "../src/bearer/errors.js";
+
+// Mock verifyAccessToken function
+const mockVerifyAccessToken = vi.fn();
 
 // Mock dependencies
-vi.mock("jose", () => ({
-  createRemoteJWKSet: vi.fn(),
-  decodeJwt: vi.fn(),
-  jwtVerify: vi.fn(),
+vi.mock("@auth0/auth0-api-js", () => ({
+  ApiClient: class MockApiClient {
+    constructor() {}
+    verifyAccessToken = mockVerifyAccessToken;
+  },
 }));
 
 vi.mock("../src/bearer", () => ({
@@ -39,6 +46,9 @@ vi.mock("partyserver", () => {
 
 // Create a mock Connection class
 class MockConnection {
+  id = "connection-id-1";
+  readyState = 1;
+  OPEN = 1;
   close = vi.fn();
   send = vi.fn();
 }
@@ -55,41 +65,18 @@ const createMockContext = (
 describe("WithAuth Mixin", () => {
   let AuthenticatedServer: any;
   let server: any;
-  let mockJWKSet: any;
   const onAuthenticatedRequest = vi.fn();
   const onAuthenticatedConnect = vi.fn();
+
   beforeEach(() => {
     vi.resetAllMocks();
 
-    mockJWKSet = vi.fn();
-
-    (global.fetch as Mock).mockImplementation((uri) => {
-      if (
-        uri.toString() ===
-        "https://auth.example.com/.well-known/openid-configuration"
-      ) {
-        return Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              jwks_uri: "https://auth.example.com/jwks.json",
-            }),
-        });
-      }
-    });
-
-    (createRemoteJWKSet as any).mockReturnValue(mockJWKSet);
-
     // Setup default mocked behavior
-    (decodeJwt as any).mockReturnValue({
+    mockVerifyAccessToken.mockResolvedValue({
       sub: "user123",
-      iss: "https://auth.example.com",
+      iss: "https://auth0.example.com",
       aud: "api",
-    });
-
-    (jwtVerify as any).mockResolvedValue({
-      payload: { sub: "user123" },
-      protectedHeader: {},
+      scope: "read:data write:data",
     });
 
     (getToken as any).mockReturnValue("mock-token");
@@ -97,8 +84,8 @@ describe("WithAuth Mixin", () => {
     // Create the authenticated server class
     AuthenticatedServer = WithAuth(Server);
     server = new AuthenticatedServer({
-      OIDC_ISSUER_URL: "https://auth.example.com",
-      OIDC_AUDIENCE: "api",
+      AUTH0_DOMAIN: "auth0.example.com",
+      AUTH0_AUDIENCE: "api",
     });
     server.onAuthenticatedRequest = onAuthenticatedRequest;
     server.onAuthenticatedConnect = onAuthenticatedConnect;
@@ -171,46 +158,94 @@ describe("WithAuth Mixin", () => {
   });
 
   describe("getClaims", () => {
-    it("should decode and return claims from request token", async () => {
+    it("should return claims from verified token", async () => {
       // Setup
       const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("token123");
-      const mockClaims = { sub: "user456", iss: "https://auth.example.com" };
-      (decodeJwt as any).mockReturnValue(mockClaims);
+      const mockClaims = {
+        sub: "user456",
+        iss: "https://auth0.example.com",
+        scope: "read:data write:data",
+      };
+      mockVerifyAccessToken.mockResolvedValue(mockClaims);
 
       // Test
       let claims: any = null;
       server.onAuthenticatedRequest.mockImplementation(() => {
-        claims = server.getClaims(req);
+        claims = server.getClaims();
         return new Response("OK");
       });
       await server.onRequest(req);
 
       // Verify
-      expect(decodeJwt).toHaveBeenCalledWith("token123");
+      expect(mockVerifyAccessToken).toHaveBeenCalledWith({
+        accessToken: "token123",
+      });
       expect(claims).toEqual(mockClaims);
     });
 
-    it("should decode and return claims from connection token", async () => {
-      // Setup
-      const connection = new MockConnection();
-      const headers = new Headers({ Authorization: "Bearer token123" });
-      const ctx = createMockContext(headers);
-      server.onConnect(connection, ctx);
-
-      const mockClaims = { sub: "user789", iss: "https://auth.example.com" };
-      (decodeJwt as any).mockReturnValue(mockClaims);
-
+    it("should return undefined if no token is found", () => {
       // Test
-      let claims: any = null;
-      server.onAuthenticatedConnect.mockImplementation(() => {
-        claims = server.getClaims(connection);
-      });
-      await server.onConnect(connection, ctx);
+      const claims = server.getClaims();
 
       // Verify
-      expect(decodeJwt).toHaveBeenCalledWith("mock-token");
-      expect(claims).toEqual(mockClaims);
+      expect(claims).toBeUndefined();
+    });
+  });
+
+  describe("requireAuth", () => {
+    it("should successfully validate a token with required scopes", async () => {
+      // Setup
+      const req = new Request("https://example.com");
+      (getToken as any).mockReturnValue("valid-token");
+      mockVerifyAccessToken.mockResolvedValue({
+        sub: "user123",
+        scope: "read:data write:data",
+      });
+
+      // Test
+      let tokenSet;
+      server.onAuthenticatedRequest.mockImplementation(async () => {
+        tokenSet = await server.requireAuth({ scopes: "read:data" });
+        return new Response("OK");
+      });
+
+      await server.onRequest(req);
+
+      // Verify
+      expect(mockVerifyAccessToken).toHaveBeenCalledWith({
+        accessToken: "valid-token",
+      });
+      expect(tokenSet).toEqual({
+        access_token: "valid-token",
+        id_token: undefined,
+        refresh_token: undefined,
+      });
+    });
+
+    it("should throw InsufficientScopeError if token lacks required scopes", async () => {
+      // Setup
+      const req = new Request("https://example.com");
+      (getToken as any).mockReturnValue("valid-token");
+      mockVerifyAccessToken.mockResolvedValue({
+        sub: "user123",
+        scope: "read:data", // Missing write:data scope
+      });
+
+      // Test & Verify
+      server.onAuthenticatedRequest.mockImplementation(async () => {
+        await expect(
+          server.requireAuth({ scopes: "write:data" }),
+        ).rejects.toThrow(InsufficientScopeError);
+        return new Response("OK");
+      });
+
+      await server.onRequest(req);
+    });
+
+    it("should throw UnauthorizedError if no token is found", async () => {
+      // Test & Verify
+      await expect(server.requireAuth()).rejects.toThrow(UnauthorizedError);
     });
   });
 
@@ -223,16 +258,10 @@ describe("WithAuth Mixin", () => {
       // Test
       const resp = await server.onRequest(req);
 
-      expect(jwtVerify).toHaveBeenCalled();
       // Verify
-      expect(jwtVerify).toHaveBeenCalledWith(
-        "valid-token",
-        expect.any(Function),
-        {
-          issuer: "https://auth.example.com",
-          audience: "api",
-        },
-      );
+      expect(mockVerifyAccessToken).toHaveBeenCalledWith({
+        accessToken: "valid-token",
+      });
       expect(resp.status).toBe(200);
     });
 
@@ -240,7 +269,7 @@ describe("WithAuth Mixin", () => {
       // Setup
       const req = new Request("https://example.com");
       (getToken as any).mockReturnValue("invalid-token");
-      (jwtVerify as any).mockRejectedValue(new Error("Invalid token"));
+      mockVerifyAccessToken.mockRejectedValue(new Error("Invalid token"));
 
       // Test
       const result = await server.onRequest(req);
@@ -248,7 +277,27 @@ describe("WithAuth Mixin", () => {
       // Verify
       expect(result).toBeInstanceOf(Response);
       expect(result.status).toBe(401);
-      expect(await result.text()).toBe("Unauthorized");
+    });
+
+    it("should skip auth validation when authRequired is false", async () => {
+      // Setup
+      const req = new Request("https://example.com");
+      const AuthenticatedServerOptional = WithAuth(Server, {
+        authRequired: false,
+      });
+      const optionalServer = new AuthenticatedServerOptional(
+        {},
+        {
+          AUTH0_DOMAIN: "auth0.example.com",
+          AUTH0_AUDIENCE: "api",
+        },
+      );
+
+      // Test
+      await optionalServer.onRequest(req);
+
+      // Verify
+      expect(mockVerifyAccessToken).not.toHaveBeenCalled();
     });
   });
 
@@ -263,22 +312,16 @@ describe("WithAuth Mixin", () => {
       await server.onConnect(connection, ctx);
 
       // Verify
-      expect(jwtVerify).toHaveBeenCalledWith(
-        "valid-token",
-        expect.any(Function),
-        {
-          issuer: "https://auth.example.com",
-          audience: "api",
-        },
-      );
-
+      expect(mockVerifyAccessToken).toHaveBeenCalledWith({
+        accessToken: "valid-token",
+      });
       expect(connection.close).not.toHaveBeenCalled();
     });
 
     it("should properly close the connection when the token is invalid", async () => {
       // Setup
       (getToken as any).mockReturnValue("invalid-token");
-      (jwtVerify as any).mockRejectedValue(new Error("Invalid token"));
+      mockVerifyAccessToken.mockRejectedValue(new Error("Invalid token"));
       const connection = new MockConnection();
       const ctx = createMockContext();
 
@@ -286,7 +329,31 @@ describe("WithAuth Mixin", () => {
       await server.onConnect(connection, ctx);
 
       // Verify
-      expect(connection.close).toHaveBeenCalledWith(1008, "Unauthorized");
+      expect(connection.close).toHaveBeenCalledWith(1008, "Invalid token");
+    });
+
+    it("should skip auth validation when authRequired is false", async () => {
+      // Setup
+      const AuthenticatedServerOptional = WithAuth(Server, {
+        authRequired: false,
+      });
+      const optionalServer = new AuthenticatedServerOptional(
+        {},
+        {
+          AUTH0_DOMAIN: "auth0.example.com",
+          AUTH0_AUDIENCE: "api",
+        },
+      );
+      const connection = new MockConnection();
+      const ctx = createMockContext();
+
+      // Test
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      //@ts-expect-error
+      await optionalServer.onConnect(connection, ctx);
+
+      // Verify
+      expect(mockVerifyAccessToken).not.toHaveBeenCalled();
     });
   });
 
@@ -304,7 +371,7 @@ describe("WithAuth Mixin", () => {
       // Test
       let credentials: any = null;
       server.onAuthenticatedConnect.mockImplementation(() => {
-        credentials = server.getCredentials(connection);
+        credentials = server.getCredentialsFromConnection(connection);
       });
       await server.onConnect(connection, ctx);
 
@@ -326,12 +393,14 @@ describe("WithAuth Mixin", () => {
       await server.onConnect(connection, ctx);
 
       // Test - can get credentials before close
-      expect(server.getCredentialsFromConnection(connection)).not.toBeNull();
+      expect(
+        server.getCredentialsFromConnection(connection),
+      ).not.toBeUndefined();
 
       // Close the connection
       server.onClose(connection, 1000, "Normal closure", true);
 
-      // Verify - should throw after close
+      // Verify - should be undefined after close
       expect(server.getCredentialsFromConnection(connection)).toBeUndefined();
     });
   });
@@ -359,6 +428,31 @@ describe("WithAuth Mixin", () => {
       expect(credentials).toEqual({
         access_token: "mock-token",
       });
+    });
+  });
+
+  describe("onAuthenticatedConnect and onAuthenticatedRequest", () => {
+    it("should call onAuthenticatedConnect when a connection is authenticated", async () => {
+      // Setup
+      const connection = new MockConnection();
+      const ctx = createMockContext();
+
+      // Test
+      await server.onConnect(connection, ctx);
+
+      // Verify
+      expect(onAuthenticatedConnect).toHaveBeenCalledWith(connection, ctx);
+    });
+
+    it("should call onAuthenticatedRequest when a request is authenticated", async () => {
+      // Setup
+      const req = new Request("https://example.com");
+
+      // Test
+      await server.onRequest(req);
+
+      // Verify
+      expect(onAuthenticatedRequest).toHaveBeenCalledWith(req);
     });
   });
 });

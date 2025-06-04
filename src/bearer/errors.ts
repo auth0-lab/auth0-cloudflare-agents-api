@@ -2,6 +2,8 @@
  * Errors per https://tools.ietf.org/html/rfc6750#section-3.1
  */
 
+import { Connection } from "partyserver";
+
 /**
  * If the request lacks any authentication information,
  * the resource server SHOULD NOT include an error code or
@@ -15,6 +17,27 @@ export class UnauthorizedError extends Error {
   constructor(message = "Unauthorized") {
     super(message);
     this.name = this.constructor.name;
+  }
+
+  /**
+   * Respond with a 401 Unauthorized error.
+   * This is used for HTTP requests.
+   * @returns
+   */
+  toResponse() {
+    return new Response(null, {
+      status: this.statusCode,
+      headers: this.headers,
+    });
+  }
+
+  /**
+   * Terminate a websocket connection
+   * due an authorization error.
+   * @param connection -
+   */
+  terminateConnection(connection: Connection) {
+    connection.close(1008, this.message);
   }
 }
 
