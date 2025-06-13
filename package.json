@@ -1,5 +1,5 @@
 {
-  "name": "@auth0/auth0-cloudflare-agent-api",
+  "name": "@auth0/auth0-cloudflare-agents-api",
   "version": "3.3.1",
   "description": "A PartyServer mixin for adding Auth0 API authentication to your PartyServer applications.",
   "author": {
@@ -21,11 +21,13 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:ui": "vitest --ui",
-    "prepare": "npm run build",
+    "prepare": "npm run build && husky",
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix"
   },
   "devDependencies": {
+    "@commitlint/cli": "^19.3.0",
+    "@commitlint/config-conventional": "^19.2.2",
     "@eslint/compat": "^1.2.8",
     "@eslint/js": "^9.24.0",
     "@types/node": "^20.11.26",
@@ -36,7 +38,9 @@
     "eslint": "^9.24.0",
     "eslint-config-prettier": "^10.1.2",
     "globals": "^16.0.0",
+    "husky": "^9.1.7",
     "prettier": "3.5.3",
+    "semantic-release": "^24.2.5",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.30.1",
     "vitest": "^3.1.1"
