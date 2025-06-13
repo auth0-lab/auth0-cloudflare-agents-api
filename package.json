@@ -1,6 +1,6 @@
 {
   "name": "@auth0/auth0-cloudflare-agents-api",
-  "version": "3.3.1",
+  "version": "1.0.0",
   "description": "A PartyServer mixin for adding Auth0 API authentication to your PartyServer applications.",
   "author": {
     "name": "Auth0 Inc.",
