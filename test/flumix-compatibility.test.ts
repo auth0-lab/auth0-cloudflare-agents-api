@@ -2,12 +2,12 @@
 
 /**
  * This test verifies that the mixins work with flumix-style composition patterns
- * and can be applied to AIChatAgent from the agents package.
+ * and can be applied to AIChatAgent from the @cloudflare/ai-chat package.
  *
  * Note: This is a type-only test. We cannot actually run code that imports AIChatAgent
  * because it depends on cloudflare: protocol imports which are not available in Node.js.
  */
-import type { AIChatAgent } from "agents/ai-chat-agent";
+import type { AIChatAgent } from "@cloudflare/ai-chat";
 import { extend } from "flumix";
 import { describe, expect, it } from "vitest";
 import { AuthAgent, OwnedAgent } from "../src";

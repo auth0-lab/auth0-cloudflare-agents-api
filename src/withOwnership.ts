@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import type { AIChatAgent } from "agents/ai-chat-agent";
+import type { AIChatAgent } from "@cloudflare/ai-chat";
 import { Connection, Server } from "partyserver";
 import { AuthenticatedServer, AuthorizedServer, Constructor } from "./types.js";
 

@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { ApiClient as Auth0APIClient } from "@auth0/auth0-api-js";
-import type { AIChatAgent } from "agents/ai-chat-agent";
+import type { AIChatAgent } from "@cloudflare/ai-chat";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Connection, ConnectionContext, Server, WSMessage } from "partyserver";
 import {
