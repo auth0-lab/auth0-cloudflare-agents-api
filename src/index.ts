@@ -65,7 +65,7 @@ export const WithAuth = <
   TBase extends Constructor<Server<Env>> | Constructor<AIChatAgent<Env>>,
 >(
   Base: TBase,
-  options: WithAuthParams = { authRequired: true },
+  options: WithAuthParams = {},
 ) => {
   const authRequired = options.authRequired ?? true;
   const debug = options.debug ?? (() => {});
@@ -209,7 +209,7 @@ export const WithAuth = <
     async onRequest(req: Request) {
       try {
         const tokenSet = this.#getTokenSetFromRequest(req);
-        if (options.authRequired) {
+        if (authRequired) {
           await this.#validateTokenFromRequest(req);
           return this.#asyncTokenStorage.run(tokenSet, async () => {
             const authResponse = await this.onAuthenticatedRequest(req);
